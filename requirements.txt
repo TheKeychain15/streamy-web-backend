@@ -2,3 +2,5 @@ fastapi
 ytmusicapi
 yt_dlp
 uvicorn
+flask
+flask-cors
