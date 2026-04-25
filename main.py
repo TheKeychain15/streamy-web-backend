@@ -1,50 +1,64 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from ytmusicapi import YTMusic
+import os
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import yt_dlp
-import uvicorn
 
-app = FastAPI()
-yt = YTMusic()
+app = Flask(__name__)
+# This allows your Netlify site to access this backend without security blocks
+CORS(app)
 
-# Allows any device in the house to talk to your code
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Optimization: Keep the yt_dlp options outside the function to save memory
+YDL_OPTS = {
+    'format': 'bestaudio/best',
+    'quiet': True,
+    'no_warnings': True,
+    'extract_flat': False,
+    # This prevents the server from trying to download the whole file
+    'force_generic_extractor': False, 
+}
 
-@app.get("/")
-def get_home():
-    # This serves your index.html file to anyone who visits the link
-    return FileResponse("index.html")
+@app.route('/search', methods=['GET'])
+def search():
+    query = request.args.get('q')
+    if not query:
+        return jsonify([])
 
-@app.get("/search")
-def search(q: str):
-    results = yt.search(q, filter="songs")
-    songs = []
-    for s in results:
-        songs.append({
-            "title": s['title'],
-            "artist": s['artists'][0]['name'] if s['artists'] else "Unknown",
-            "id": s['videoId'],
-            "thumb": s['thumbnails'][-1]['url']
-        })
-    return songs
+    try:
+        with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
+            # We search for the top 10 results
+            info = ydl.extract_info(f"ytsearch10:{query}", download=False)
+            results = []
+            for entry in info['entries']:
+                results.append({
+                    'id': entry['id'],
+                    'title': entry['title'],
+                    'artist': entry.get('uploader', 'Unknown Artist'),
+                    'duration': entry.get('duration')
+                })
+            return jsonify(results)
+    except Exception as e:
+        print(f"Search error: {e}")
+        return jsonify({"error": str(e)}), 500
 
-@app.get("/get_audio")
-def get_audio(id: str):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'noplaylist': True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"https://www.youtube.com/watch?v={id}", download=False)
-        return {"url": info['url']}
+@app.route('/get_audio', methods=['GET'])
+def get_audio():
+    video_id = request.args.get('id')
+    if not video_id:
+        return jsonify({"error": "No ID provided"}), 400
 
-if __name__ == "__main__":
-    # host="0.0.0.0" is the secret to making it work on other devices
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
+            info = ydl.extract_info(url, download=False)
+            # We want the direct stream URL so the browser plays it
+            return jsonify({"url": info['url']})
+    except Exception as e:
+        print(f"Audio fetch error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    # CRITICAL: Hosting services tell the app which port to use via an Environment Variable
+    # If 'PORT' isn't set, it defaults to 8000 (for your local testing)
+    port = int(os.environ.get("PORT", 8000))
+    # '0.0.0.0' makes the server accessible to the outside world
+    app.run(host='0.0.0.0', port=port)
